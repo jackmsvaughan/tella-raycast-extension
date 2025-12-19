@@ -118,19 +118,68 @@ export async function getTranscriptCache(): Promise<TranscriptCache | null> {
   }
 }
 
+// Cache size thresholds (in bytes)
+const CACHE_WARNING_SIZE = 3 * 1024 * 1024; // 3MB - warn user
+const CACHE_MAX_SIZE = 5 * 1024 * 1024; // 5MB - likely to fail
+
+export interface CacheStats {
+  transcriptCount: number;
+  sizeBytes: number;
+  sizeFormatted: string;
+  isLarge: boolean;
+  isNearLimit: boolean;
+}
+
+export async function getTranscriptCacheStats(): Promise<CacheStats | null> {
+  try {
+    const cached = await LocalStorage.getItem<string>(TRANSCRIPT_CACHE_KEY);
+    if (!cached) return null;
+
+    const sizeBytes = new Blob([cached]).size;
+    const parsed = JSON.parse(cached) as TranscriptCache;
+    const transcriptCount = Object.keys(parsed.transcripts).length;
+
+    return {
+      transcriptCount,
+      sizeBytes,
+      sizeFormatted: formatCacheSize(sizeBytes),
+      isLarge: sizeBytes > CACHE_WARNING_SIZE,
+      isNearLimit: sizeBytes > CACHE_MAX_SIZE * 0.8,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatCacheSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export async function setTranscriptCache(
   cache: TranscriptCache,
-): Promise<void> {
+): Promise<{ success: boolean; sizeBytes?: number }> {
   try {
-    await LocalStorage.setItem(TRANSCRIPT_CACHE_KEY, JSON.stringify(cache));
+    const json = JSON.stringify(cache);
+    const sizeBytes = new Blob([json]).size;
+
+    // Check if cache is too large
+    if (sizeBytes > CACHE_MAX_SIZE) {
+      console.warn(`Transcript cache too large (${formatCacheSize(sizeBytes)}), may fail to save`);
+    }
+
+    await LocalStorage.setItem(TRANSCRIPT_CACHE_KEY, json);
+    return { success: true, sizeBytes };
   } catch {
-    // Silently fail - caching is best effort
+    // Cache save failed - likely due to size
+    return { success: false };
   }
 }
 
 export async function addTranscriptsToCache(
   newTranscripts: Record<string, CachedTranscript>,
-): Promise<void> {
+): Promise<{ success: boolean; stats?: CacheStats }> {
   try {
     const existing = await getTranscriptCache();
     const updated: TranscriptCache = {
@@ -140,9 +189,25 @@ export async function addTranscriptsToCache(
       },
       fetchedAt: new Date().toISOString(),
     };
-    await setTranscriptCache(updated);
+    const result = await setTranscriptCache(updated);
+
+    if (result.success && result.sizeBytes) {
+      const transcriptCount = Object.keys(updated.transcripts).length;
+      return {
+        success: true,
+        stats: {
+          transcriptCount,
+          sizeBytes: result.sizeBytes,
+          sizeFormatted: formatCacheSize(result.sizeBytes),
+          isLarge: result.sizeBytes > CACHE_WARNING_SIZE,
+          isNearLimit: result.sizeBytes > CACHE_MAX_SIZE * 0.8,
+        },
+      };
+    }
+
+    return { success: result.success };
   } catch {
-    // Silently fail - caching is best effort
+    return { success: false };
   }
 }
 

@@ -1,7 +1,85 @@
 // Constants
 export const CACHE_FRESH_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 export const GRID_INITIAL_LOAD = 24; // 6 rows × 4 columns
-export const FETCH_CONCURRENCY = 5; // Concurrent API requests
+export const FETCH_CONCURRENCY = 3; // Reduced concurrent API requests to avoid rate limiting
+export const BATCH_DELAY_MS = 1000; // Delay between batches to avoid rate limiting
+
+/**
+ * Rate-limited batch processor that adds delays between batches.
+ * This helps avoid API rate limits on first run when fetching many items.
+ */
+export async function batchProcess<T, R>(
+  items: T[],
+  processor: (item: T) => Promise<R>,
+  options: {
+    concurrency?: number;
+    delayBetweenBatches?: number;
+    onProgress?: (current: number, total: number) => void;
+    onBatchComplete?: (results: R[]) => void;
+  } = {},
+): Promise<R[]> {
+  const {
+    concurrency = FETCH_CONCURRENCY,
+    delayBetweenBatches = BATCH_DELAY_MS,
+    onProgress,
+    onBatchComplete,
+  } = options;
+
+  const results: R[] = [];
+
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+
+    // Add delay between batches (but not before the first batch)
+    if (i > 0 && delayBetweenBatches > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayBetweenBatches));
+    }
+
+    const batchResults = await Promise.allSettled(
+      batch.map((item) => processor(item)),
+    );
+
+    const successfulResults: R[] = [];
+    batchResults.forEach((result) => {
+      if (result.status === "fulfilled") {
+        results.push(result.value);
+        successfulResults.push(result.value);
+      }
+    });
+
+    if (onBatchComplete) {
+      onBatchComplete(successfulResults);
+    }
+
+    if (onProgress) {
+      onProgress(Math.min(i + concurrency, items.length), items.length);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Estimate time for batch processing based on item count.
+ * Returns human-readable string like "about 30 seconds" or "about 2 minutes"
+ */
+export function estimateBatchTime(
+  itemCount: number,
+  concurrency = FETCH_CONCURRENCY,
+  delayMs = BATCH_DELAY_MS,
+): string {
+  if (itemCount === 0) return "instantly";
+
+  const batches = Math.ceil(itemCount / concurrency);
+  // Estimate ~500ms per API call + delay between batches
+  const estimatedMs = batches * 500 + (batches - 1) * delayMs;
+  const seconds = Math.ceil(estimatedMs / 1000);
+
+  if (seconds < 10) return "a few seconds";
+  if (seconds < 60) return `about ${Math.ceil(seconds / 10) * 10} seconds`;
+  const minutes = Math.ceil(seconds / 60);
+  return `about ${minutes} minute${minutes > 1 ? "s" : ""}`;
+}
 
 // Date formatting utilities
 

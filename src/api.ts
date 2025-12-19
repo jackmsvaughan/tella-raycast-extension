@@ -17,10 +17,20 @@ import type {
 } from "./types";
 
 const API = "https://api.tella.com/v1";
+const MAX_RETRY_ATTEMPTS = 3;
 
 type Preferences = {
   tellaApiKey: string;
 };
+
+export class RateLimitError extends Error {
+  retryAfter?: number;
+  constructor(message: string, retryAfter?: number) {
+    super(message);
+    this.name = "RateLimitError";
+    this.retryAfter = retryAfter;
+  }
+}
 
 function getAuthHeaders() {
   const { tellaApiKey } = getPreferenceValues<Preferences>();
@@ -49,12 +59,39 @@ async function tellaFetch<T>(
   });
 
   if (res.status === 429) {
-    const retryAfter = Number(res.headers.get("Retry-After") || 0);
-    const waitMs = retryAfter ? retryAfter * 1000 : 500 * Math.pow(2, attempt);
-    await new Promise((r) => setTimeout(r, waitMs));
-    if (attempt < 3) {
+    const retryAfterHeader = res.headers.get("Retry-After");
+    const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
+    
+    // If we have retries left, wait and retry
+    if (attempt < MAX_RETRY_ATTEMPTS) {
+      // Use Retry-After header if available, otherwise exponential backoff with jitter
+      const waitMs = retryAfter
+        ? retryAfter * 1000
+        : (500 * Math.pow(2, attempt) + Math.random() * 1000);
+      
+      await new Promise((r) => setTimeout(r, waitMs));
       return tellaFetch<T>(path, init, attempt + 1);
     }
+    
+    // Exhausted retries - throw a specific rate limit error
+    const body = await res.text();
+    let errorMessage = "Rate limit exceeded. Please wait a moment and try again.";
+    
+    try {
+      const errorData = JSON.parse(body);
+      if (errorData.message) {
+        errorMessage = errorData.message;
+      }
+    } catch {
+      // Use default message if body isn't valid JSON
+    }
+    
+    throw new RateLimitError(
+      retryAfter
+        ? `${errorMessage} Retry after ${retryAfter} second${retryAfter > 1 ? "s" : ""}.`
+        : errorMessage,
+      retryAfter,
+    );
   }
 
   if (!res.ok) {

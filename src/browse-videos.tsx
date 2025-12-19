@@ -26,6 +26,7 @@ import {
   addVideoToPlaylist,
   removeVideoFromPlaylist,
   startVideoExport,
+  RateLimitError,
 } from "./api";
 import type { Video, StartExportRequest, UpdateVideoRequest } from "./types";
 import {
@@ -35,8 +36,8 @@ import {
   isCacheExpired,
   formatRelativeTime,
 } from "./cache";
-import { ErrorDetail } from "./components";
-import { formatDate, GRID_INITIAL_LOAD, FETCH_CONCURRENCY } from "./utils";
+import { ErrorDetail, RateLimitErrorDetail } from "./components";
+import { formatDate, GRID_INITIAL_LOAD, FETCH_CONCURRENCY, BATCH_DELAY_MS } from "./utils";
 
 type SortOption =
   | "date-desc"
@@ -47,14 +48,21 @@ type SortOption =
   | "name-desc";
 type ViewMode = "list" | "grid";
 
-// Helper to batch fetch video details with concurrency limit
+// Helper to batch fetch video details with concurrency limit and rate limiting
 async function fetchVideoDetails(
   videoIds: string[],
-  concurrency = 5,
+  concurrency = FETCH_CONCURRENCY,
+  delayBetweenBatches = BATCH_DELAY_MS,
 ): Promise<Record<string, Video>> {
   const results: Record<string, Video> = {};
   for (let i = 0; i < videoIds.length; i += concurrency) {
     const batch = videoIds.slice(i, i + concurrency);
+
+    // Add delay between batches to avoid rate limiting (but not before the first batch)
+    if (i > 0 && delayBetweenBatches > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayBetweenBatches));
+    }
+
     const batchResults = await Promise.allSettled(
       batch.map(async (id) => {
         const response = await getVideo(id);
@@ -352,9 +360,27 @@ export default function BrowseVideos({
     });
   }, [sortedVideos, videoDetailsRecord, viewMode]);
 
-  // Handle errors - always show with Copy Debug Info as primary action
+  // Handle errors - check for rate limit errors first
   if (error || detailsError) {
     const errorToShow = error || detailsError;
+    
+    // Handle rate limit errors with a better UI
+    if (errorToShow instanceof RateLimitError) {
+      return (
+        <RateLimitErrorDetail
+          error={errorToShow}
+          onRetry={handleRefresh}
+          context={{
+            command: "Browse Videos",
+            playlistId: playlistId || null,
+            viewMode,
+            errorType: error ? "list" : "details",
+          }}
+        />
+      );
+    }
+    
+    // Handle other errors with debug info
     const debugInfo = {
       error: errorToShow?.message || String(errorToShow),
       stack: errorToShow instanceof Error ? errorToShow.stack : undefined,
@@ -381,6 +407,13 @@ export default function BrowseVideos({
                   title: "Debug info copied",
                 });
               }}
+              shortcut={{ modifiers: [], key: "enter" }}
+            />
+            <Action
+              title="Retry"
+              icon={Icon.ArrowClockwise}
+              onAction={handleRefresh}
+              shortcut={{ modifiers: ["cmd"], key: "r" }}
             />
           </ActionPanel>
         }

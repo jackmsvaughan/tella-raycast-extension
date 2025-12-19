@@ -16,13 +16,14 @@ import {
 } from "./cache";
 import { listVideos, listPlaylists, getVideo } from "./api";
 import type { Video } from "./types";
-import { FETCH_CONCURRENCY } from "./utils";
+import { FETCH_CONCURRENCY, BATCH_DELAY_MS } from "./utils";
 import BrowseVideos from "./browse-videos";
 import BrowsePlaylists from "./browse-playlists";
 import {
   formatDate as formatDateRelative,
   formatNumber,
   formatDuration,
+  estimateBatchTime,
 } from "./utils";
 
 interface Metrics {
@@ -63,14 +64,22 @@ function calculateMetrics(videos: Video[]): Metrics {
   };
 }
 
-// Helper to batch fetch video details with concurrency limit
+// Helper to batch fetch video details with concurrency limit and rate limiting
 async function fetchVideoDetails(
   videoIds: string[],
-  concurrency = 5,
+  concurrency = FETCH_CONCURRENCY,
+  delayBetweenBatches = BATCH_DELAY_MS,
+  onProgress?: (current: number, total: number) => void,
 ): Promise<Record<string, Video>> {
   const results: Record<string, Video> = {};
   for (let i = 0; i < videoIds.length; i += concurrency) {
     const batch = videoIds.slice(i, i + concurrency);
+
+    // Add delay between batches to avoid rate limiting (but not before the first batch)
+    if (i > 0 && delayBetweenBatches > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayBetweenBatches));
+    }
+
     const batchResults = await Promise.allSettled(
       batch.map(async (id) => {
         const response = await getVideo(id);
@@ -82,6 +91,10 @@ async function fetchVideoDetails(
         results[result.value.id] = result.value.video;
       }
     });
+
+    if (onProgress) {
+      onProgress(Math.min(i + concurrency, videoIds.length), videoIds.length);
+    }
   }
   return results;
 }
@@ -204,15 +217,16 @@ export default function Overview() {
     if (videos.length === 0) return;
 
     setIsSyncingDurations(true);
+    const estimatedTime = estimateBatchTime(videos.length);
     showToast({
       style: Toast.Style.Animated,
       title: "Syncing watch times...",
-      message: `Fetching details for ${videos.length} videos`,
+      message: `${videos.length} videos • ${estimatedTime}`,
     });
 
     try {
       const videoIds = videos.map((v) => v.id);
-      const detailsMap = await fetchVideoDetails(videoIds, FETCH_CONCURRENCY);
+      const detailsMap = await fetchVideoDetails(videoIds);
 
       // Extract durations and cache them
       const durations: Record<string, number> = {};

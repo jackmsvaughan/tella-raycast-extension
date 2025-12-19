@@ -6,28 +6,75 @@ Coding patterns and conventions for the Tella Raycast extension.
 
 ---
 
+## ⚠️ Rate Limiting (Critical)
+
+The Tella API has rate limits. **Any batch operation that fetches individual video details must include delays between batches.** See `Features & Roadmap.md` for full context.
+
+**Key constants** (`src/utils.ts`):
+```typescript
+export const FETCH_CONCURRENCY = 3;      // Max concurrent requests per batch
+export const BATCH_DELAY_MS = 1000;      // Delay between batches (milliseconds)
+```
+
+**Always add delays in batch loops:**
+```typescript
+for (let i = 0; i < items.length; i += FETCH_CONCURRENCY) {
+  // Add delay between batches (but not before the first)
+  if (i > 0 && BATCH_DELAY_MS > 0) {
+    await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+  }
+  
+  const batch = items.slice(i, i + FETCH_CONCURRENCY);
+  // ... process batch
+}
+```
+
+**For rate limit errors**, use `RateLimitErrorDetail` component:
+```typescript
+import { RateLimitError } from "./api";
+import { RateLimitErrorDetail } from "./components";
+
+if (error instanceof RateLimitError) {
+  return <RateLimitErrorDetail error={error} onRetry={handleRetry} />;
+}
+```
+
+---
+
 ## File Structure
 
 ```
 src/
-├── api.ts           # API client with auth, rate limiting, error handling
+├── api.ts           # API client with auth, rate limiting, RateLimitError
 ├── cache.ts         # LocalStorage caching utilities
-├── components.tsx   # Shared React components (ErrorDetail)
+├── components.tsx   # Shared React components (ErrorDetail, RateLimitErrorDetail)
 ├── types.ts         # TypeScript interfaces for API responses
-├── utils.ts         # Shared utilities and constants
+├── utils.ts         # Shared utilities, constants, batchProcess, estimateBatchTime
 ├── browse-videos.tsx
 ├── browse-playlists.tsx
 ├── overview.tsx
-└── search-transcripts.tsx
+├── search-transcripts.tsx
+└── tools/
+    └── search-transcripts.ts  # AI Chat tool for transcript search
 ```
 
 ---
 
 ## Error Handling
 
-Use `ErrorDetail` from `src/components.tsx`. Ensure "Copy Debug Info" is the **first action** so Enter copies it.
+Use components from `src/components.tsx`. Ensure primary action is Enter-accessible.
 
-**Component-level errors** (failed data fetch):
+**For rate limit errors** — Use `RateLimitErrorDetail`:
+```typescript
+import { RateLimitError } from "./api";
+import { RateLimitErrorDetail } from "./components";
+
+if (error instanceof RateLimitError) {
+  return <RateLimitErrorDetail error={error} onRetry={revalidate} context={{ command: "..." }} />;
+}
+```
+
+**For general errors** — Use `ErrorDetail`:
 ```typescript
 if (error) {
   return <ErrorDetail error={error} context={{ command: "Browse Videos" }} />;
@@ -73,8 +120,13 @@ Define in `src/utils.ts`:
 ```typescript
 export const CACHE_FRESH_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 export const GRID_INITIAL_LOAD = 24;                    // 6 rows × 4 columns
-export const FETCH_CONCURRENCY = 5;                     // Concurrent API requests
+export const FETCH_CONCURRENCY = 3;                     // Concurrent API requests (kept low to avoid rate limiting)
+export const BATCH_DELAY_MS = 1000;                     // Delay between batches to avoid rate limiting
 ```
+
+**Utilities:**
+- `batchProcess()` — Rate-limited batch processor with progress callbacks
+- `estimateBatchTime()` — Human-readable time estimate for batch operations
 
 ---
 
@@ -90,6 +142,8 @@ export const FETCH_CONCURRENCY = 5;                     // Concurrent API reques
 - Key: `tella-transcripts-cache`
 - Stores transcripts separately (large content)
 - Incremental updates (only fetches new videos)
+- Size monitoring: warns at 3MB, critical at 5MB
+- Use `getTranscriptCacheStats()` to check size
 
 **User preferences** (LocalStorage):
 - `viewMode` — list/grid toggle
@@ -117,9 +171,13 @@ For pagination, manage cursor state manually and call `revalidate()` to trigger 
 
 The API client (`src/api.ts`) handles:
 - Authentication via Bearer token
-- Rate limiting (429) with automatic retry + exponential backoff
-- Max 3 retry attempts
-- All errors bubble up to UI for `ErrorDetail` handling
+- Rate limiting (429) with automatic retry + exponential backoff + jitter
+- Max 3 retry attempts before throwing `RateLimitError`
+- Respects `Retry-After` header when present
+- All errors bubble up to UI for `ErrorDetail` or `RateLimitErrorDetail` handling
+
+**Exported classes:**
+- `RateLimitError` — Specific error for rate limit failures (has `retryAfter` property)
 
 ---
 

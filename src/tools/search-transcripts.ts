@@ -1,7 +1,7 @@
 import { getTranscriptCache, addTranscriptsToCache } from "../cache";
 import { listVideos, getVideo } from "../api";
 import type { Video, TranscriptSentence } from "../types";
-import { FETCH_CONCURRENCY } from "../utils";
+import { FETCH_CONCURRENCY, BATCH_DELAY_MS } from "../utils";
 
 type Input = {
   query: string;
@@ -158,9 +158,15 @@ async function fetchAndCacheTranscripts(): Promise<
     hasMore = response.pagination.hasMore;
   }
 
-  // Fetch transcripts in batches
+  // Fetch transcripts in batches with delay to avoid rate limiting
   for (let i = 0; i < allVideos.length; i += FETCH_CONCURRENCY) {
     const batch = allVideos.slice(i, i + FETCH_CONCURRENCY);
+
+    // Add delay between batches (but not before the first batch)
+    if (i > 0 && BATCH_DELAY_MS > 0) {
+      await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+
     const batchResults = await Promise.allSettled(
       batch.map(async (video) => {
         const response = await getVideo(video.id);
@@ -300,13 +306,15 @@ export default async function tool(input: Input): Promise<string> {
     return `No results found for "${query}" in your video transcripts. Try different keywords.`;
   }
 
-  // Format output
+  // Format output with video links for deep-linking
   let output = `Found ${results.length} relevant excerpt${results.length === 1 ? "" : "s"} for "${query}":\n\n`;
 
   for (const result of topResults) {
     const timestamp = formatTimestamp(result.timestampSeconds);
-    output += `**Video: "${result.videoName}"** (${timestamp})\n`;
-    output += `"${result.text.trim()}"\n\n`;
+    const videoUrl = `https://www.tella.tv/video/${result.videoId}`;
+    output += `**Video: "${result.videoName}"** at ${timestamp}\n`;
+    output += `> "${result.text.trim()}"\n`;
+    output += `[Watch Video](${videoUrl})\n\n`;
   }
 
   if (results.length > 10) {

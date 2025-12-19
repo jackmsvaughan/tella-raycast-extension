@@ -10,21 +10,25 @@ import {
   open,
 } from "@raycast/api";
 import { useState, useEffect, useMemo } from "react";
-import { listVideos, getVideo } from "./api";
+import { listVideos, getVideo, RateLimitError } from "./api";
 import type { Video, Transcript } from "./types";
 import {
   getVideoCache,
   getTranscriptCache,
   addTranscriptsToCache,
   clearTranscriptCache,
+  getTranscriptCacheStats,
   type CachedTranscript,
 } from "./cache";
 import {
   formatDate,
   FETCH_CONCURRENCY,
+  BATCH_DELAY_MS,
   formatTranscriptWithTimestamps,
   formatTranscriptAsSRT,
+  estimateBatchTime,
 } from "./utils";
+import { RateLimitErrorDetail } from "./components";
 
 interface VideoWithTranscript {
   video: Video;
@@ -57,20 +61,37 @@ function highlightMatches(text: string, query: string): string {
   return excerpt.replace(new RegExp(`(${escapeRegex(query)})`, "gi"), "`$1`");
 }
 
-// Helper to batch fetch transcripts with concurrency limit
+// Helper to batch fetch transcripts with concurrency limit and rate limiting
 async function fetchTranscripts(
   videos: Video[],
-  concurrency = FETCH_CONCURRENCY,
-  onProgress?: (current: number, total: number) => void,
+  options: {
+    concurrency?: number;
+    delayBetweenBatches?: number;
+    onProgress?: (current: number, total: number) => void;
+    onBatchComplete?: (newTranscripts: Record<string, CachedTranscript>) => void;
+  } = {},
 ): Promise<{
   results: VideoWithTranscript[];
   newTranscripts: Record<string, CachedTranscript>;
 }> {
+  const {
+    concurrency = FETCH_CONCURRENCY,
+    delayBetweenBatches = BATCH_DELAY_MS,
+    onProgress,
+    onBatchComplete,
+  } = options;
+
   const results: VideoWithTranscript[] = [];
   const newTranscripts: Record<string, CachedTranscript> = {};
 
   for (let i = 0; i < videos.length; i += concurrency) {
     const batch = videos.slice(i, i + concurrency);
+
+    // Add delay between batches to avoid rate limiting (but not before the first batch)
+    if (i > 0 && delayBetweenBatches > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayBetweenBatches));
+    }
+
     const batchResults = await Promise.allSettled(
       batch.map(async (video) => {
         try {
@@ -83,7 +104,7 @@ async function fetchTranscripts(
               status: transcript.status,
               text: transcript.text,
               videoName: video.name,
-              sentences: transcript.sentences, // Include sentences for AI chat timestamps
+              sentences: transcript.sentences,
             };
           }
 
@@ -100,11 +121,24 @@ async function fetchTranscripts(
         }
       }),
     );
+
+    const batchNewTranscripts: Record<string, CachedTranscript> = {};
     batchResults.forEach((result) => {
       if (result.status === "fulfilled") {
         results.push(result.value);
+        // Track new transcripts from this batch
+        const videoId = result.value.video.id;
+        if (newTranscripts[videoId]) {
+          batchNewTranscripts[videoId] = newTranscripts[videoId];
+        }
       }
     });
+
+    // Save after each batch so progress isn't lost if interrupted
+    if (onBatchComplete && Object.keys(batchNewTranscripts).length > 0) {
+      onBatchComplete(batchNewTranscripts);
+    }
+
     if (onProgress) {
       onProgress(Math.min(i + concurrency, videos.length), videos.length);
     }
@@ -118,7 +152,8 @@ export default function SearchTranscripts() {
     VideoWithTranscript[]
   >([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [loadingStatus, setLoadingStatus] = useState("Fetching videos...");
+  const [isSyncing, setIsSyncing] = useState(false); // Background sync indicator
+  const [loadingStatus, setLoadingStatus] = useState("Loading...");
   const [loadingProgress, setLoadingProgress] = useState({
     current: 0,
     total: 0,
@@ -126,30 +161,30 @@ export default function SearchTranscripts() {
   const [cachedCount, setCachedCount] = useState(0);
   const [newCount, setNewCount] = useState(0);
   const [error, setError] = useState<Error | null>(null);
+  const [showFirstRunSetup, setShowFirstRunSetup] = useState(false);
+  const [pendingVideos, setPendingVideos] = useState<Video[]>([]);
 
   // Convert cached transcript to full Transcript object
   const cachedToTranscript = (cached: CachedTranscript): Transcript => ({
     status: cached.status,
-    language: "en", // Default, not critical for search
+    language: "en",
     text: cached.text,
-    sentences: cached.sentences || [], // Include sentences for AI chat timestamps
+    sentences: cached.sentences || [],
   });
 
-  // Load videos and fetch transcripts
-  const loadTranscripts = async (forceRefresh = false) => {
+  // Load cached data immediately, check if sync is needed
+  const initializeTranscripts = async () => {
     try {
       setIsLoading(true);
       setError(null);
-      setLoadingStatus("Fetching videos...");
 
-      // Try to get videos from cache first
+      // Load video cache
       let videos: Video[] = [];
       const videoCache = await getVideoCache();
       if (videoCache && videoCache.videos.length > 0) {
         videos = videoCache.videos;
-        setLoadingStatus(`Found ${videos.length} videos in cache`);
       } else {
-        // No cache - fetch all videos
+        // No video cache - fetch videos (this is relatively fast)
         setLoadingStatus("Fetching videos from Tella...");
         const allVideos: Video[] = [];
         let cursor: string | undefined;
@@ -158,7 +193,6 @@ export default function SearchTranscripts() {
         while (hasMore) {
           const response = await listVideos({ cursor, limit: 50 });
           allVideos.push(...response.videos);
-          setLoadingStatus(`Fetched ${allVideos.length} videos...`);
           cursor = response.pagination.nextCursor;
           hasMore = response.pagination.hasMore;
         }
@@ -170,46 +204,15 @@ export default function SearchTranscripts() {
         return;
       }
 
-      // Get video IDs set for filtering deleted videos
+      // Load transcript cache
+      const transcriptCache = await getTranscriptCache();
       const videoIds = new Set(videos.map((v) => v.id));
 
-      // Load transcript cache
-      let transcriptCache = await getTranscriptCache();
-
-      // If force refresh, clear cache
-      if (forceRefresh) {
-        await clearTranscriptCache();
-        transcriptCache = null;
-      }
-
-      // Filter out deleted videos from cache
-      if (transcriptCache) {
-        const validTranscripts: Record<string, CachedTranscript> = {};
-        for (const [videoId, transcript] of Object.entries(
-          transcriptCache.transcripts,
-        )) {
-          if (videoIds.has(videoId)) {
-            validTranscripts[videoId] = transcript;
-          }
-        }
-        transcriptCache.transcripts = validTranscripts;
-      }
-
-      const cachedIds = new Set(
-        Object.keys(transcriptCache?.transcripts || {}),
-      );
-      const videosToFetch = videos.filter((v) => !cachedIds.has(v.id));
-      const cachedTranscriptCount = cachedIds.size;
-      const newVideoCount = videosToFetch.length;
-
-      // Track counts for UI
-      setCachedCount(cachedTranscriptCount);
-      setNewCount(newVideoCount);
-
-      // Build results from cache
+      // Build results from cache (show immediately)
+      const cachedTranscripts = transcriptCache?.transcripts || {};
       const results: VideoWithTranscript[] = videos.map((video) => {
-        const cached = transcriptCache?.transcripts[video.id];
-        if (cached && cached.status === "ready") {
+        const cached = cachedTranscripts[video.id];
+        if (cached && cached.status === "ready" && videoIds.has(video.id)) {
           return {
             video,
             transcript: cachedToTranscript(cached),
@@ -221,56 +224,133 @@ export default function SearchTranscripts() {
         };
       });
 
-      // If all cached, we're done!
-      if (videosToFetch.length === 0) {
-        setVideosWithTranscripts(results);
-        setIsLoading(false);
-        setLoadingStatus("All transcripts cached");
-        return;
+      // Count cached vs new
+      const cachedIds = new Set(Object.keys(cachedTranscripts).filter((id) => videoIds.has(id)));
+      const videosToFetch = videos.filter((v) => !cachedIds.has(v.id));
+
+      setCachedCount(cachedIds.size);
+      setNewCount(videosToFetch.length);
+      setVideosWithTranscripts(results);
+      setIsLoading(false);
+
+      // If there are cached transcripts, show them immediately
+      if (cachedIds.size > 0) {
+        // If there are new videos, sync in background
+        if (videosToFetch.length > 0) {
+          setPendingVideos(videosToFetch);
+          // Start background sync automatically if it's just a few videos
+          if (videosToFetch.length <= 10) {
+            syncNewTranscripts(videosToFetch, results);
+          } else {
+            // For many videos, show toast so user knows there's more
+            showToast({
+              style: Toast.Style.Success,
+              title: `${cachedIds.size} transcripts loaded`,
+              message: `${videosToFetch.length} new videos available. Use ⌘R to sync.`,
+            });
+          }
+        }
+      } else if (videosToFetch.length > 0) {
+        // First run - no cache at all, show setup screen
+        setPendingVideos(videosToFetch);
+        setShowFirstRunSetup(true);
       }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      setError(error);
+      setIsLoading(false);
+    }
+  };
 
-      // Fetch only missing transcripts
-      setLoadingProgress({ current: 0, total: videosToFetch.length });
-      setLoadingStatus(`Fetching ${videosToFetch.length} new transcripts...`);
+  // Sync new transcripts (can be called from first-run setup or background)
+  const syncNewTranscripts = async (
+    videosToSync: Video[],
+    existingResults?: VideoWithTranscript[],
+  ) => {
+    try {
+      setShowFirstRunSetup(false);
+      setIsSyncing(true);
+      setLoadingProgress({ current: 0, total: videosToSync.length });
 
-      const { results: fetchedResults, newTranscripts } =
-        await fetchTranscripts(
-          videosToFetch,
-          FETCH_CONCURRENCY,
-          (current, total) => {
-            setLoadingProgress({ current, total });
-            setLoadingStatus(`Loading transcripts... ${current}/${total}`);
-          },
-        );
+      const currentResults = existingResults || videosWithTranscripts;
+
+      showToast({
+        style: Toast.Style.Animated,
+        title: "Syncing transcripts...",
+        message: `0/${videosToSync.length} - This may take ${estimateBatchTime(videosToSync.length)}`,
+      });
+
+      const { results: fetchedResults } = await fetchTranscripts(videosToSync, {
+        onProgress: (current, total) => {
+          setLoadingProgress({ current, total });
+        },
+        onBatchComplete: async (batchTranscripts) => {
+          // Save after each batch so progress isn't lost
+          if (Object.keys(batchTranscripts).length > 0) {
+            await addTranscriptsToCache(batchTranscripts);
+          }
+        },
+      });
 
       // Merge fetched transcripts into results
       const fetchedMap = new Map(fetchedResults.map((r) => [r.video.id, r]));
-      const mergedResults = results.map((r) => {
+      const mergedResults = currentResults.map((r) => {
         const fetched = fetchedMap.get(r.video.id);
         return fetched || r;
       });
 
-      // Save new transcripts to cache
-      if (Object.keys(newTranscripts).length > 0) {
-        await addTranscriptsToCache(newTranscripts);
-      }
-
       setVideosWithTranscripts(mergedResults);
+      setPendingVideos([]);
+      setCachedCount((prev) => prev + fetchedResults.filter((r) => r.transcript?.status === "ready").length);
+      setNewCount(0);
+
+      // Check cache size and warn if getting large
+      const cacheStats = await getTranscriptCacheStats();
+      if (cacheStats?.isNearLimit) {
+        showToast({
+          style: Toast.Style.Failure,
+          title: "Cache nearly full",
+          message: `${cacheStats.sizeFormatted} used. Consider clearing old transcripts.`,
+        });
+      } else if (cacheStats?.isLarge) {
+        showToast({
+          style: Toast.Style.Success,
+          title: "Sync complete",
+          message: `${fetchedResults.length} synced (cache: ${cacheStats.sizeFormatted})`,
+        });
+      } else {
+        showToast({
+          style: Toast.Style.Success,
+          title: "Sync complete",
+          message: `${fetchedResults.length} transcripts synced`,
+        });
+      }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       setError(error);
       showToast({
         style: Toast.Style.Failure,
-        title: "Failed to load transcripts",
+        title: "Sync failed",
         message: error.message,
       });
     } finally {
-      setIsLoading(false);
+      setIsSyncing(false);
     }
   };
 
+  // Force refresh - clear cache and reload everything
+  const forceRefresh = async () => {
+    await clearTranscriptCache();
+    setVideosWithTranscripts([]);
+    setCachedCount(0);
+    setNewCount(0);
+    setPendingVideos([]);
+    setShowFirstRunSetup(false);
+    await initializeTranscripts();
+  };
+
   useEffect(() => {
-    loadTranscripts();
+    initializeTranscripts();
   }, []);
 
   // Filter videos: show all when browsing, filter when searching
@@ -292,6 +372,18 @@ export default function SearchTranscripts() {
 
   // Handle errors
   if (error) {
+    // Handle rate limit errors with a better UI
+    if (error instanceof RateLimitError) {
+      return (
+        <RateLimitErrorDetail
+          error={error}
+          onRetry={forceRefresh}
+          context={{ command: "Search Transcripts" }}
+        />
+      );
+    }
+
+    // Handle other errors with debug info
     const debugInfo = {
       error: error.message,
       stack: error.stack,
@@ -315,6 +407,13 @@ export default function SearchTranscripts() {
                   title: "Debug info copied",
                 });
               }}
+              shortcut={{ modifiers: [], key: "enter" }}
+            />
+            <Action
+              title="Retry"
+              icon={Icon.ArrowClockwise}
+              onAction={forceRefresh}
+              shortcut={{ modifiers: ["cmd"], key: "r" }}
             />
           </ActionPanel>
         }
@@ -322,41 +421,94 @@ export default function SearchTranscripts() {
     );
   }
 
-  if (isLoading) {
-    const progressBar =
-      loadingProgress.total > 0
-        ? `[${"█".repeat(Math.floor((loadingProgress.current / loadingProgress.total) * 20))}${"░".repeat(20 - Math.floor((loadingProgress.current / loadingProgress.total) * 20))}]`
-        : "";
-
-    // Build loading message based on cache state
-    let loadingMessage = "";
-    if (cachedCount > 0 && newCount > 0) {
-      loadingMessage = `## What's happening?\n\n${cachedCount} transcripts cached • ${newCount} new videos found\n\nOnly new videos are being fetched.`;
-    } else if (cachedCount === 0 && newCount > 0) {
-      loadingMessage = `## What's happening?\n\nTranscripts are being cached locally for instant search.\nAfter this, only new videos will need to be fetched.`;
-    } else {
-      loadingMessage = `## What's happening?\n\nLoading transcripts...`;
-    }
-
-    const markdown = `# Loading Transcripts\n\n${loadingStatus}\n\n${progressBar}\n\n${loadingMessage}\n\n**Tip:** Press ⌘K → "Clear Transcript Cache" to refresh all transcripts.`;
+  // First-run setup screen
+  if (showFirstRunSetup && pendingVideos.length > 0) {
+    const estimatedTime = estimateBatchTime(pendingVideos.length);
 
     return (
       <Detail
-        markdown={markdown}
+        markdown={`# Welcome to Transcript Search
+
+This is your first time using transcript search. To enable searching across your videos, we need to download and cache your transcripts locally.
+
+## What will happen?
+
+- **${pendingVideos.length} videos** will be synced
+- Estimated time: **${estimatedTime}**
+- Transcripts are cached locally for instant search
+- Future syncs will only fetch new videos
+
+## Why does this take time?
+
+The Tella API provides transcripts per-video, so we need to fetch each one individually. To avoid rate limiting, we add small delays between requests.
+
+**Ready?** Press **Enter** to start syncing, or press **Escape** to skip for now.`}
         actions={
           <ActionPanel>
             <Action
-              title="Clear Transcript Cache"
-              icon={Icon.Trash}
-              onAction={async () => {
-                await clearTranscriptCache();
+              title={`Start Sync (${estimatedTime})`}
+              icon={Icon.Download}
+              onAction={() => syncNewTranscripts(pendingVideos)}
+            />
+            <Action
+              title="Skip for Now"
+              icon={Icon.XMarkCircle}
+              onAction={() => {
+                setShowFirstRunSetup(false);
                 showToast({
                   style: Toast.Style.Success,
-                  title: "Cache cleared",
+                  title: "Sync skipped",
+                  message: "Use ⌘R to sync transcripts later",
                 });
-                loadTranscripts(true);
               }}
             />
+          </ActionPanel>
+        }
+      />
+    );
+  }
+
+  // Initial loading
+  if (isLoading) {
+    return (
+      <Detail
+        markdown={`# Loading Transcripts\n\n${loadingStatus}\n\nChecking cache and fetching videos...`}
+        actions={
+          <ActionPanel>
+            <Action
+              title="Clear Cache and Refresh"
+              icon={Icon.Trash}
+              onAction={forceRefresh}
+            />
+          </ActionPanel>
+        }
+      />
+    );
+  }
+
+  // Syncing indicator (shown while background sync is running)
+  if (isSyncing && loadingProgress.total > 0) {
+    const progressBar = `[${"█".repeat(Math.floor((loadingProgress.current / loadingProgress.total) * 20))}${"░".repeat(20 - Math.floor((loadingProgress.current / loadingProgress.total) * 20))}]`;
+    const remaining = loadingProgress.total - loadingProgress.current;
+    const estimatedRemaining = estimateBatchTime(remaining);
+
+    return (
+      <Detail
+        markdown={`# Syncing Transcripts
+
+${progressBar}
+
+**Progress:** ${loadingProgress.current}/${loadingProgress.total} videos
+
+**Remaining:** ~${estimatedRemaining}
+
+---
+
+Transcripts are being cached locally. After this, only new videos will need to be synced.
+
+**Note:** Progress is saved after each batch, so you won't lose progress if you close the extension.`}
+        actions={
+          <ActionPanel>
             <Action
               title="Open Cache Folder"
               icon={Icon.Folder}
@@ -374,6 +526,15 @@ export default function SearchTranscripts() {
     (item) => item.transcript && item.transcript.status === "ready",
   );
 
+  // Helper for refresh actions
+  const handleRefresh = () => {
+    if (pendingVideos.length > 0) {
+      syncNewTranscripts(pendingVideos);
+    } else {
+      initializeTranscripts();
+    }
+  };
+
   if (videosWithReadyTranscripts.length === 0) {
     return (
       <List
@@ -382,23 +543,25 @@ export default function SearchTranscripts() {
         filtering={false}
         actions={
           <ActionPanel>
+            {pendingVideos.length > 0 ? (
+              <Action
+                title={`Sync ${pendingVideos.length} Transcripts`}
+                icon={Icon.Download}
+                onAction={() => syncNewTranscripts(pendingVideos)}
+                shortcut={{ modifiers: ["cmd"], key: "r" }}
+              />
+            ) : (
+              <Action
+                title="Refresh Transcripts"
+                icon={Icon.ArrowClockwise}
+                onAction={handleRefresh}
+                shortcut={{ modifiers: ["cmd"], key: "r" }}
+              />
+            )}
             <Action
-              title="Refresh Transcripts"
-              icon={Icon.ArrowClockwise}
-              onAction={() => loadTranscripts(true)}
-              shortcut={{ modifiers: ["cmd"], key: "r" }}
-            />
-            <Action
-              title="Clear Transcript Cache"
+              title="Clear Cache and Refresh"
               icon={Icon.Trash}
-              onAction={async () => {
-                await clearTranscriptCache();
-                showToast({
-                  style: Toast.Style.Success,
-                  title: "Cache cleared",
-                });
-                loadTranscripts(true);
-              }}
+              onAction={forceRefresh}
             />
             <Action
               title="Open Cache Folder"
@@ -413,11 +576,21 @@ export default function SearchTranscripts() {
         <List.EmptyView
           icon={Icon.Document}
           title="No Transcripts Available"
-          description="No videos with ready transcripts found"
+          description={pendingVideos.length > 0 
+            ? `${pendingVideos.length} videos available to sync. Press ⌘R to sync.`
+            : "No videos with ready transcripts found"
+          }
         />
       </List>
     );
   }
+
+  // Build navigation title with sync status
+  const navigationTitle = isSyncing 
+    ? `Syncing... ${loadingProgress.current}/${loadingProgress.total}`
+    : pendingVideos.length > 0 
+      ? `Transcripts • ${pendingVideos.length} pending`
+      : "Transcripts";
 
   return (
     <List
@@ -425,25 +598,28 @@ export default function SearchTranscripts() {
       onSearchTextChange={setSearchText}
       filtering={false}
       isShowingDetail={true}
+      navigationTitle={navigationTitle}
       actions={
         <ActionPanel>
+          {pendingVideos.length > 0 ? (
+            <Action
+              title={`Sync ${pendingVideos.length} New Transcripts`}
+              icon={Icon.Download}
+              onAction={() => syncNewTranscripts(pendingVideos)}
+              shortcut={{ modifiers: ["cmd"], key: "r" }}
+            />
+          ) : (
+            <Action
+              title="Refresh Transcripts"
+              icon={Icon.ArrowClockwise}
+              onAction={handleRefresh}
+              shortcut={{ modifiers: ["cmd"], key: "r" }}
+            />
+          )}
           <Action
-            title="Refresh Transcripts"
-            icon={Icon.ArrowClockwise}
-            onAction={() => loadTranscripts(true)}
-            shortcut={{ modifiers: ["cmd"], key: "r" }}
-          />
-          <Action
-            title="Clear Transcript Cache"
+            title="Clear Cache and Refresh"
             icon={Icon.Trash}
-            onAction={async () => {
-              await clearTranscriptCache();
-              showToast({
-                style: Toast.Style.Success,
-                title: "Cache cleared",
-              });
-              loadTranscripts(true);
-            }}
+            onAction={forceRefresh}
           />
           <Action
             title="Open Cache Folder"
@@ -574,23 +750,25 @@ export default function SearchTranscripts() {
                     content={item.video.links.viewPage}
                     title="Copy Video Link"
                   />
+                  {pendingVideos.length > 0 ? (
+                    <Action
+                      title={`Sync ${pendingVideos.length} New Transcripts`}
+                      icon={Icon.Download}
+                      onAction={() => syncNewTranscripts(pendingVideos)}
+                      shortcut={{ modifiers: ["cmd"], key: "r" }}
+                    />
+                  ) : (
+                    <Action
+                      title="Refresh Transcripts"
+                      icon={Icon.ArrowClockwise}
+                      onAction={handleRefresh}
+                      shortcut={{ modifiers: ["cmd"], key: "r" }}
+                    />
+                  )}
                   <Action
-                    title="Refresh Transcripts"
-                    icon={Icon.ArrowClockwise}
-                    onAction={() => loadTranscripts(true)}
-                    shortcut={{ modifiers: ["cmd"], key: "r" }}
-                  />
-                  <Action
-                    title="Clear Transcript Cache"
+                    title="Clear Cache and Refresh"
                     icon={Icon.Trash}
-                    onAction={async () => {
-                      await clearTranscriptCache();
-                      showToast({
-                        style: Toast.Style.Success,
-                        title: "Cache cleared",
-                      });
-                      loadTranscripts(true);
-                    }}
+                    onAction={forceRefresh}
                   />
                   <Action
                     title="Open Cache Folder"

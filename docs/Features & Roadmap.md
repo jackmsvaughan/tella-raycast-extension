@@ -6,6 +6,54 @@ Current features organized by command, plus future ideas.
 
 ---
 
+## ⚠️ Rate Limiting & First-Run Experience
+
+**Critical context:** The Tella API has rate limits, and many features require fetching individual video details (transcripts, durations, thumbnails). This means first-run and sync operations can trigger rate limiting if not handled carefully.
+
+### Key Constraints
+
+1. **List vs Detail API** — The `/videos` list endpoint returns basic info only. Transcripts, durations, thumbnails, and settings require individual `/videos/{id}` calls.
+
+2. **Rate Limiting** — The API returns `429 Too Many Requests` when limits are exceeded. The extension handles this with:
+   - Automatic retry with exponential backoff (max 3 attempts)
+   - User-friendly error screens with retry options
+   - `RateLimitError` class for specific handling
+
+3. **First-Run Impact** — New users with many videos will trigger many API calls:
+   - 50 videos = 50 individual API calls for transcripts
+   - Without delays, this triggers rate limiting
+
+### How We Handle It
+
+**Rate-limited batch processing:**
+```typescript
+// src/utils.ts
+export const FETCH_CONCURRENCY = 3;      // Max concurrent requests
+export const BATCH_DELAY_MS = 1000;      // 1 second delay between batches
+```
+
+**First-run UX for Transcripts:**
+- Shows a setup screen instead of auto-fetching
+- Displays video count and time estimate
+- User initiates sync (not automatic)
+- Progress saved after each batch (can resume if interrupted)
+- Shows cached data immediately while syncing new
+
+**Time estimates:**
+- 50 videos ≈ 30 seconds
+- 100 videos ≈ 1 minute
+- Uses `estimateBatchTime()` utility
+
+### When Adding New Features
+
+If your feature needs to fetch individual video details:
+1. Use the `batchProcess()` utility or add delays between batches
+2. Consider if the data can be cached
+3. Show progress for long operations
+4. Let users initiate expensive operations (don't auto-fetch)
+
+---
+
 ## Overview
 
 Dashboard view showing your Tella content at a glance.
@@ -82,10 +130,18 @@ Manage your Tella playlists.
 
 Search across all video transcripts.
 
+**First-Run Experience:**
+- Setup screen explains what will happen (video count, time estimate)
+- User initiates sync (not automatic) to avoid surprise rate limiting
+- Progress bar with "X/Y videos" and time remaining
+- Progress saved after each batch (can close and resume)
+- Shows cached transcripts immediately while syncing new videos
+
 **Browse Mode:**
 - View all videos with transcripts in split-pane view
 - Arrow through videos to see each transcript
 - Full transcript displayed in detail pane
+- Navigation title shows "X pending" when new videos available
 
 **Search Mode:**
 - Search transcript content across all videos
@@ -100,11 +156,14 @@ Search across all video transcripts.
 - Copy transcript as SRT (`⌘⇧S`) — standard subtitle file format
 - View full transcript detail
 
-**Caching:**
+**Caching & Sync:**
 - Transcripts cached locally for instant search
 - Incremental updates (only fetches new videos)
+- "Sync X New Transcripts" action when new videos detected
 - Clear cache action
 - Open cache folder action
+- Rate-limited fetching with 1s delays between batches
+- Cache size monitoring with warnings when approaching limits
 
 ---
 
@@ -127,6 +186,7 @@ Chat with your videos using Raycast's native AI Chat.
 - Tokenizes query into keywords (removes stopwords)
 - Scores sentences by keyword matches
 - Returns top 10 matching excerpts with timestamps
+- Includes video links for deep-linking (AI can provide "Watch Video" links)
 - Formatted as citations for AI to synthesize
 
 ---
@@ -135,9 +195,17 @@ Chat with your videos using Raycast's native AI Chat.
 
 Features available across multiple commands.
 
+**Rate Limit Handling:**
+- Automatic retry with exponential backoff (max 3 attempts)
+- User-friendly error screen when rate limited
+- "Retry After X seconds" action respects API's retry-after header
+- "Retry Now" option for immediate retry
+- All batch operations use delays to avoid triggering rate limits
+
 **Error Handling:**
 - Consistent error display with debug information
 - Press Enter to copy debug info for troubleshooting
+- Specific handling for rate limit errors vs general errors
 
 **Preferences:**
 - API key configuration

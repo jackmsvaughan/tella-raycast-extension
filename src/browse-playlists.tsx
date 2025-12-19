@@ -9,6 +9,8 @@ import {
   confirmAlert,
   Alert,
   useNavigation,
+  Detail,
+  Clipboard,
 } from "@raycast/api";
 import { useCachedPromise } from "@raycast/utils";
 import { useState } from "react";
@@ -17,6 +19,7 @@ import {
   deletePlaylist,
   createPlaylist,
   updatePlaylist,
+  RateLimitError,
 } from "./api";
 import type {
   Playlist,
@@ -24,7 +27,7 @@ import type {
   UpdatePlaylistRequest,
 } from "./types";
 import BrowseVideos from "./browse-videos";
-import { ErrorDetail } from "./components";
+import { ErrorDetail, RateLimitErrorDetail } from "./components";
 
 export default function BrowsePlaylists() {
   const [visibility, setVisibility] = useState<"personal" | "org">("personal");
@@ -57,6 +60,18 @@ export default function BrowsePlaylists() {
   });
 
   if (error) {
+    // Handle rate limit errors with a better UI
+    if (error instanceof RateLimitError) {
+      return (
+        <RateLimitErrorDetail
+          error={error}
+          onRetry={revalidate}
+          context={{ command: "Browse Playlists", visibility }}
+        />
+      );
+    }
+
+    // Handle other errors with debug info
     const debugInfo = {
       error: error.message,
       stack: error.stack,
@@ -81,6 +96,13 @@ export default function BrowsePlaylists() {
                   title: "Debug info copied",
                 });
               }}
+              shortcut={{ modifiers: [], key: "enter" }}
+            />
+            <Action
+              title="Retry"
+              icon={Icon.ArrowClockwise}
+              onAction={revalidate}
+              shortcut={{ modifiers: ["cmd"], key: "r" }}
             />
           </ActionPanel>
         }
