@@ -36,9 +36,8 @@ Browse and manage all your Tella videos with powerful features:
   - Copy video or embed links
   - View or copy transcript
   - Edit video settings (`⇧⌘,`)
-  - Add to playlist
+  - Add to playlist (with option to create new playlist)
   - Duplicate and open video
-  - Start export (when available)
   - Delete video
 
 **Shortcuts:**
@@ -133,10 +132,6 @@ The cache is always refreshed when you use the refresh action (`⌘R`).
 - Clear transcript cache: `⌘K` → "Clear Transcript Cache" in Transcripts
 - Video cache refreshes automatically based on your cache duration setting
 - Force refresh: Use `⌘R` in any command
-
-### Export functionality
-
-The Tella API export endpoint is currently returning `501 Not Implemented`. This feature will be available once Tella implements it on their end. The extension handles this gracefully with a clear error message.
 
 ## Documentation
 
