@@ -132,6 +132,8 @@ Update playlist.
 - `password` — 1-255 chars (required if linkScope is `password`)
 - `searchEngineIndexingEnabled` — boolean
 
+**Note:** `emoji` cannot be updated after creation. It can only be set when creating a playlist via `POST /playlists`.
+
 **Response:** `{ playlist: Playlist }`
 
 ---

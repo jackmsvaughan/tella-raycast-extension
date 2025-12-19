@@ -158,6 +158,7 @@ export interface CreatePlaylistRequest {
 export interface UpdatePlaylistRequest {
   name?: string; // 1-255 chars
   description?: string; // max 5000 chars
+  // Note: emoji cannot be updated after creation, only set via POST /playlists
   linkScope?: "public" | "private" | "password" | "embedonly";
   password?: string; // 1-255 chars, required if linkScope is "password"
   searchEngineIndexingEnabled?: boolean;

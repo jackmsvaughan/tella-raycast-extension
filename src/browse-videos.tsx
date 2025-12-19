@@ -26,9 +26,15 @@ import {
   addVideoToPlaylist,
   removeVideoFromPlaylist,
   startVideoExport,
+  createPlaylist,
   RateLimitError,
 } from "./api";
-import type { Video, StartExportRequest, UpdateVideoRequest } from "./types";
+import type {
+  Video,
+  StartExportRequest,
+  UpdateVideoRequest,
+  CreatePlaylistRequest,
+} from "./types";
 import {
   getVideoCache,
   setVideoCache,
@@ -626,6 +632,7 @@ function VideoActions({
         <AddToPlaylistAction
           videoId={video.id}
           videoName={video.name}
+          videoPlaylistIds={video.playlistIds}
           onRefresh={onRefresh}
         />
         {playlistId && (
@@ -794,9 +801,8 @@ function VideoSettingsForm({
 }) {
   const { pop } = useNavigation();
 
-  // Check if video already has settings (from grid view fetch)
-  const hasSettings = !!video.settings;
-
+  // Always fetch full video details to ensure we have complete settings
+  // List endpoint doesn't include all settings fields, so we need the full video object
   const {
     data: fullVideo,
     isLoading,
@@ -808,56 +814,95 @@ function VideoSettingsForm({
       return response.video;
     },
     [video.id],
-    {
-      // Don't execute if we already have settings - use video immediately
-      execute: !hasSettings,
-    },
   );
 
-  // If we have settings, use video immediately (no loading needed)
-  const videoToUse = hasSettings ? video : fullVideo;
+  // Use fullVideo when available, fallback to video for initial render
+  const videoToUse = fullVideo || video;
 
-  const [name, setName] = useState(video.name);
-  const [description, setDescription] = useState(video.description);
-  const [defaultPlaybackRate, setDefaultPlaybackRate] = useState<string>("1");
-  const [captionsDefaultEnabled, setCaptionsDefaultEnabled] = useState(false);
-  const [transcriptsEnabled, setTranscriptsEnabled] = useState(false);
-  const [publishDateEnabled, setPublishDateEnabled] = useState(false);
-  const [viewCountEnabled, setViewCountEnabled] = useState(false);
-  const [commentsEnabled, setCommentsEnabled] = useState(false);
-  const [commentEmailsEnabled, setCommentEmailsEnabled] = useState(false);
-  const [downloadsEnabled, setDownloadsEnabled] = useState(false);
-  const [rawDownloadsEnabled, setRawDownloadsEnabled] = useState(false);
+  // Helper to get initial values from video settings
+  const getInitialValues = (videoData: Video | undefined) => {
+    const settings = videoData?.settings;
+    return {
+      name: videoData?.name || video.name,
+      description: videoData?.description || video.description,
+      defaultPlaybackRate: settings?.defaultPlaybackRate?.toString() || "1",
+      captionsDefaultEnabled: settings?.captionsDefaultEnabled ?? false,
+      transcriptsEnabled: settings?.transcriptsEnabled ?? false,
+      publishDateEnabled: settings?.publishDateEnabled ?? false,
+      viewCountEnabled: settings?.viewCountEnabled ?? false,
+      commentsEnabled: settings?.commentsEnabled ?? false,
+      commentEmailsEnabled: settings?.commentEmailsEnabled ?? false,
+      downloadsEnabled: settings?.downloadsEnabled ?? false,
+      rawDownloadsEnabled: settings?.rawDownloadsEnabled ?? false,
+      linkScope: settings?.linkScope || "public",
+      password: "",
+      searchEngineIndexingEnabled: settings?.searchEngineIndexingEnabled ?? false,
+      customThumbnailURL: settings?.customThumbnailURL || "",
+    };
+  };
+
+  const initialValues = getInitialValues(videoToUse);
+
+  const [name, setName] = useState(initialValues.name);
+  const [description, setDescription] = useState(initialValues.description);
+  const [defaultPlaybackRate, setDefaultPlaybackRate] = useState<string>(
+    initialValues.defaultPlaybackRate,
+  );
+  const [captionsDefaultEnabled, setCaptionsDefaultEnabled] = useState(
+    initialValues.captionsDefaultEnabled,
+  );
+  const [transcriptsEnabled, setTranscriptsEnabled] = useState(
+    initialValues.transcriptsEnabled,
+  );
+  const [publishDateEnabled, setPublishDateEnabled] = useState(
+    initialValues.publishDateEnabled,
+  );
+  const [viewCountEnabled, setViewCountEnabled] = useState(
+    initialValues.viewCountEnabled,
+  );
+  const [commentsEnabled, setCommentsEnabled] = useState(
+    initialValues.commentsEnabled,
+  );
+  const [commentEmailsEnabled, setCommentEmailsEnabled] = useState(
+    initialValues.commentEmailsEnabled,
+  );
+  const [downloadsEnabled, setDownloadsEnabled] = useState(
+    initialValues.downloadsEnabled,
+  );
+  const [rawDownloadsEnabled, setRawDownloadsEnabled] = useState(
+    initialValues.rawDownloadsEnabled,
+  );
   const [linkScope, setLinkScope] = useState<
     "public" | "private" | "password" | "embedonly"
-  >("public");
-  const [password, setPassword] = useState("");
+  >(initialValues.linkScope);
+  const [password, setPassword] = useState(initialValues.password);
   const [searchEngineIndexingEnabled, setSearchEngineIndexingEnabled] =
-    useState(false);
-  const [customThumbnailURL, setCustomThumbnailURL] = useState("");
+    useState(initialValues.searchEngineIndexingEnabled);
+  const [customThumbnailURL, setCustomThumbnailURL] = useState(
+    initialValues.customThumbnailURL,
+  );
 
-  // Initialize form values when video data is available
+  // Update form values when video data becomes available or changes
   useEffect(() => {
     if (videoToUse) {
-      setName(videoToUse.name);
-      setDescription(videoToUse.description);
-      if (videoToUse.settings) {
-        setDefaultPlaybackRate(
-          videoToUse.settings.defaultPlaybackRate.toString(),
-        );
-        setCaptionsDefaultEnabled(videoToUse.settings.captionsDefaultEnabled);
-        setTranscriptsEnabled(videoToUse.settings.transcriptsEnabled);
-        setPublishDateEnabled(videoToUse.settings.publishDateEnabled);
-        setViewCountEnabled(videoToUse.settings.viewCountEnabled);
-        setCommentsEnabled(videoToUse.settings.commentsEnabled);
-        setCommentEmailsEnabled(videoToUse.settings.commentEmailsEnabled);
-        setDownloadsEnabled(videoToUse.settings.downloadsEnabled);
-        setRawDownloadsEnabled(videoToUse.settings.rawDownloadsEnabled);
-        setLinkScope(videoToUse.settings.linkScope);
-        setSearchEngineIndexingEnabled(
-          videoToUse.settings.searchEngineIndexingEnabled,
-        );
-        setCustomThumbnailURL(videoToUse.settings.customThumbnailURL || "");
+      const values = getInitialValues(videoToUse);
+      setName(values.name);
+      setDescription(values.description);
+      setDefaultPlaybackRate(values.defaultPlaybackRate);
+      setCaptionsDefaultEnabled(values.captionsDefaultEnabled);
+      setTranscriptsEnabled(values.transcriptsEnabled);
+      setPublishDateEnabled(values.publishDateEnabled);
+      setViewCountEnabled(values.viewCountEnabled);
+      setCommentsEnabled(values.commentsEnabled);
+      setCommentEmailsEnabled(values.commentEmailsEnabled);
+      setDownloadsEnabled(values.downloadsEnabled);
+      setRawDownloadsEnabled(values.rawDownloadsEnabled);
+      setLinkScope(values.linkScope);
+      setSearchEngineIndexingEnabled(values.searchEngineIndexingEnabled);
+      setCustomThumbnailURL(values.customThumbnailURL);
+      // Don't reset password field if user has typed something
+      if (!password) {
+        setPassword(values.password);
       }
     }
   }, [videoToUse]);
@@ -931,39 +976,38 @@ function VideoSettingsForm({
     }
   };
 
-  // Only show loading/error states when we need to fetch
-  if (!hasSettings) {
-    if (isLoading) {
-      return (
-        <Detail
-          markdown={`# Loading Settings
+  // Show loading state while fetching full video details
+  if (isLoading) {
+    return (
+      <Detail
+        markdown={`# Loading Settings
 
 Fetching video details...`}
-          actions={
-            <ActionPanel>
-              <Action title="Cancel" icon={Icon.XMarkCircle} onAction={pop} />
-            </ActionPanel>
-          }
-        />
-      );
-    }
+        actions={
+          <ActionPanel>
+            <Action title="Cancel" icon={Icon.XMarkCircle} onAction={pop} />
+          </ActionPanel>
+        }
+      />
+    );
+  }
 
-    if (fetchError || !fullVideo) {
-      const errorMessage =
-        fetchError instanceof Error
-          ? fetchError.message
-          : "Failed to load video";
-      return (
-        <ErrorDetail
-          error={errorMessage}
-          context={{
-            command: "Browse Videos",
-            action: "Edit Settings",
-            videoId: video.id,
-          }}
-        />
-      );
-    }
+  // Show error if fetch failed
+  if (fetchError || !fullVideo) {
+    const errorMessage =
+      fetchError instanceof Error
+        ? fetchError.message
+        : "Failed to load video";
+    return (
+      <ErrorDetail
+        error={errorMessage}
+        context={{
+          command: "Browse Videos",
+          action: "Edit Settings",
+          videoId: video.id,
+        }}
+      />
+    );
   }
 
   return (
@@ -1326,47 +1370,209 @@ function CopyTranscriptAction({ videoId }: { videoId: string }) {
 function AddToPlaylistAction({
   videoId,
   videoName,
+  videoPlaylistIds,
   onRefresh,
 }: {
   videoId: string;
   videoName: string;
+  videoPlaylistIds?: string[];
   onRefresh: () => void;
 }) {
-  const { data: playlists } = useCachedPromise(async () => {
+  const { push } = useNavigation();
+  const { data: playlists, revalidate } = useCachedPromise(async () => {
     const response = await listPlaylists({ limit: 100 });
     return response.playlists;
   }, []);
 
+  // Fetch full video details to get playlistIds if not provided
+  // (list endpoint doesn't include playlistIds)
+  const { data: fullVideo } = useCachedPromise(
+    async () => {
+      // Only fetch if playlistIds not already available
+      if (videoPlaylistIds !== undefined) {
+        return null;
+      }
+      const response = await getVideo(videoId);
+      return response.video;
+    },
+    [videoId, videoPlaylistIds],
+  );
+
+  // Use provided playlistIds or fetch from full video
+  const currentPlaylistIds = videoPlaylistIds ?? fullVideo?.playlistIds;
+
+  // Check which playlists already contain this video
+  const isInPlaylist = (playlistId: string): boolean => {
+    return currentPlaylistIds?.includes(playlistId) ?? false;
+  };
+
   return (
     <ActionPanel.Submenu title="Add to Playlist" icon={Icon.Plus}>
-      {playlists?.map((playlist) => (
-        <Action
-          key={playlist.id}
-          title={playlist.name}
-          icon={playlist.emoji ? { source: playlist.emoji } : Icon.Folder}
-          onAction={async () => {
-            try {
-              await addVideoToPlaylist(playlist.id, videoId);
-              showToast({
-                style: Toast.Style.Success,
-                title: "Video added to playlist",
-                message: `Added "${videoName}" to "${playlist.name}"`,
-              });
-              onRefresh();
-            } catch (error) {
-              showToast({
-                style: Toast.Style.Failure,
-                title: "Failed to add video to playlist",
-                message: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }}
-        />
-      ))}
+      <Action
+        title="Create New Playlist..."
+        icon={Icon.PlusCircle}
+        shortcut={{ modifiers: ["cmd"], key: "n" }}
+        onAction={() =>
+          push(
+            <CreatePlaylistAndAddVideoForm
+              videoId={videoId}
+              videoName={videoName}
+              onSuccess={() => {
+                revalidate();
+                onRefresh();
+              }}
+            />,
+          )
+        }
+      />
+      {playlists && playlists.length > 0 && (
+        <ActionPanel.Section>
+          {playlists.map((playlist) => {
+            const alreadyInPlaylist = isInPlaylist(playlist.id);
+            return (
+              <Action
+                key={playlist.id}
+                title={alreadyInPlaylist ? `${playlist.name} ✓` : playlist.name}
+                icon={playlist.emoji ? { source: playlist.emoji } : Icon.Folder}
+                onAction={async () => {
+                  if (alreadyInPlaylist) {
+                    showToast({
+                      style: Toast.Style.Success,
+                      title: "Already in playlist",
+                      message: `"${videoName}" is already in "${playlist.name}"`,
+                    });
+                    return;
+                  }
+                  try {
+                    await addVideoToPlaylist(playlist.id, videoId);
+                    showToast({
+                      style: Toast.Style.Success,
+                      title: "Video added to playlist",
+                      message: `Added "${videoName}" to "${playlist.name}"`,
+                    });
+                    onRefresh();
+                  } catch (error) {
+                    showToast({
+                      style: Toast.Style.Failure,
+                      title: "Failed to add video to playlist",
+                      message:
+                        error instanceof Error ? error.message : String(error),
+                    });
+                  }
+                }}
+              />
+            );
+          })}
+        </ActionPanel.Section>
+      )}
       {playlists && playlists.length === 0 && (
         <Action title="No Playlists Available" icon={Icon.Info} />
       )}
     </ActionPanel.Submenu>
+  );
+}
+
+function CreatePlaylistAndAddVideoForm({
+  videoId,
+  videoName,
+  onSuccess,
+}: {
+  videoId: string;
+  videoName: string;
+  onSuccess: () => void;
+}) {
+  const { pop } = useNavigation();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [emoji, setEmoji] = useState("");
+  const [visibility, setVisibility] = useState<"personal" | "org">("personal");
+
+  const handleSubmit = async (values: {
+    name: string;
+    description: string;
+    emoji: string;
+    visibility: "personal" | "org";
+  }) => {
+    try {
+      // Create the playlist
+      const playlistData: CreatePlaylistRequest = {
+        name: values.name,
+        description: values.description || undefined,
+        emoji: values.emoji || undefined,
+        visibility: values.visibility || "personal",
+      };
+      const response = await createPlaylist(playlistData);
+      const newPlaylist = response.playlist;
+
+      // Add the video to the newly created playlist
+      await addVideoToPlaylist(newPlaylist.id, videoId);
+
+      showToast({
+        style: Toast.Style.Success,
+        title: "Playlist created and video added",
+        message: `Created "${newPlaylist.name}" and added "${videoName}"`,
+      });
+
+      pop();
+      onSuccess();
+    } catch (error) {
+      showToast({
+        style: Toast.Style.Failure,
+        title: "Failed to create playlist",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  return (
+    <Form
+      navigationTitle="Create Playlist and Add Video"
+      actions={
+        <ActionPanel>
+          <Action.SubmitForm
+            title="Create Playlist and Add Video"
+            onSubmit={handleSubmit}
+            icon={Icon.CheckCircle}
+          />
+          <Action title="Cancel" icon={Icon.XMarkCircle} onAction={pop} />
+        </ActionPanel>
+      }
+    >
+      <Form.Description
+        title="Video"
+        text={`"${videoName}" will be added to this playlist`}
+      />
+      <Form.TextField
+        id="name"
+        title="Name"
+        placeholder="My Playlist"
+        value={name}
+        onChange={setName}
+      />
+      <Form.TextArea
+        id="description"
+        title="Description"
+        placeholder="A collection of videos"
+        value={description}
+        onChange={setDescription}
+      />
+      <Form.TextField
+        id="emoji"
+        title="Emoji"
+        placeholder="🎬"
+        value={emoji}
+        onChange={setEmoji}
+      />
+      <Form.Dropdown
+        id="visibility"
+        title="Visibility"
+        value={visibility}
+        onChange={setVisibility}
+      >
+        <Form.Dropdown.Item value="personal" title="Personal" />
+        <Form.Dropdown.Item value="org" title="Organization" />
+      </Form.Dropdown>
+    </Form>
   );
 }
 
