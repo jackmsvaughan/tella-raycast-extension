@@ -32,12 +32,17 @@ export class RateLimitError extends Error {
   }
 }
 
+export class MissingApiKeyError extends Error {
+  constructor() {
+    super("Tella API key is required. Please set it in extension preferences.");
+    this.name = "MissingApiKeyError";
+  }
+}
+
 function getAuthHeaders() {
   const { tellaApiKey } = getPreferenceValues<Preferences>();
   if (!tellaApiKey) {
-    throw new Error(
-      "Tella API key is required. Set it in extension preferences.",
-    );
+    throw new MissingApiKeyError();
   }
   return {
     Authorization: `Bearer ${tellaApiKey}`,
@@ -61,22 +66,23 @@ async function tellaFetch<T>(
   if (res.status === 429) {
     const retryAfterHeader = res.headers.get("Retry-After");
     const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
-    
+
     // If we have retries left, wait and retry
     if (attempt < MAX_RETRY_ATTEMPTS) {
       // Use Retry-After header if available, otherwise exponential backoff with jitter
       const waitMs = retryAfter
         ? retryAfter * 1000
-        : (500 * Math.pow(2, attempt) + Math.random() * 1000);
-      
+        : 500 * Math.pow(2, attempt) + Math.random() * 1000;
+
       await new Promise((r) => setTimeout(r, waitMs));
       return tellaFetch<T>(path, init, attempt + 1);
     }
-    
+
     // Exhausted retries - throw a specific rate limit error
     const body = await res.text();
-    let errorMessage = "Rate limit exceeded. Please wait a moment and try again.";
-    
+    let errorMessage =
+      "Rate limit exceeded. Please wait a moment and try again.";
+
     try {
       const errorData = JSON.parse(body);
       if (errorData.message) {
@@ -85,7 +91,7 @@ async function tellaFetch<T>(
     } catch {
       // Use default message if body isn't valid JSON
     }
-    
+
     throw new RateLimitError(
       retryAfter
         ? `${errorMessage} Retry after ${retryAfter} second${retryAfter > 1 ? "s" : ""}.`

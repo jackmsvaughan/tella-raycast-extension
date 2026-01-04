@@ -6,8 +6,46 @@ import {
   Clipboard,
   showToast,
   Toast,
+  openExtensionPreferences,
 } from "@raycast/api";
 import { RateLimitError } from "./api";
+
+export function MissingApiKeyDetail() {
+  return (
+    <Detail
+      markdown={`# Welcome to Tella for Raycast
+
+To get started, you need to connect your Tella account.
+
+## Setup Instructions
+
+1. **Get your API key** from [Tella Account Settings](https://www.tella.tv/account)
+2. Click **Open Extension Preferences** below (or press Enter)
+3. Paste your API key and save
+
+That's it! You'll be able to browse videos, search transcripts, and manage playlists.
+
+## Need help?
+
+- [Tella Help Center](https://help.tella.tv)
+- [Tella Website](https://www.tella.tv)`}
+      actions={
+        <ActionPanel>
+          <Action
+            title="Open Extension Preferences"
+            icon={Icon.Gear}
+            onAction={openExtensionPreferences}
+          />
+          <Action.OpenInBrowser
+            title="Open Tella Account Settings"
+            url="https://www.tella.tv/account"
+            icon={Icon.Globe}
+          />
+        </ActionPanel>
+      }
+    />
+  );
+}
 
 export function ErrorDetail({
   error,
@@ -51,7 +89,6 @@ export function ErrorDetail({
 export function RateLimitErrorDetail({
   error,
   onRetry,
-  context,
 }: {
   error: RateLimitError;
   onRetry: () => void;
@@ -71,7 +108,9 @@ export function RateLimitErrorDetail({
     });
 
     // Wait for the retry-after period plus a small buffer
-    await new Promise((resolve) => setTimeout(resolve, (retryAfter + 2) * 1000));
+    await new Promise((resolve) =>
+      setTimeout(resolve, (retryAfter + 2) * 1000),
+    );
 
     showToast({
       style: Toast.Style.Success,

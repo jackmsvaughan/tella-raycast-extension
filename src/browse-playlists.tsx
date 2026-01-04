@@ -20,6 +20,7 @@ import {
   createPlaylist,
   updatePlaylist,
   RateLimitError,
+  MissingApiKeyError,
 } from "./api";
 import type {
   Playlist,
@@ -27,7 +28,11 @@ import type {
   UpdatePlaylistRequest,
 } from "./types";
 import BrowseVideos from "./browse-videos";
-import { ErrorDetail, RateLimitErrorDetail } from "./components";
+import {
+  ErrorDetail,
+  RateLimitErrorDetail,
+  MissingApiKeyDetail,
+} from "./components";
 
 export default function BrowsePlaylists() {
   const [visibility, setVisibility] = useState<"personal" | "org">("personal");
@@ -60,6 +65,11 @@ export default function BrowsePlaylists() {
   });
 
   if (error) {
+    // Handle missing API key with onboarding
+    if (error instanceof MissingApiKeyError) {
+      return <MissingApiKeyDetail />;
+    }
+
     // Handle rate limit errors with a better UI
     if (error instanceof RateLimitError) {
       return (
@@ -359,7 +369,7 @@ function CreatePlaylistForm({ onSuccess }: { onSuccess: () => void }) {
         id="visibility"
         title="Visibility"
         value={visibility}
-        onChange={setVisibility}
+        onChange={(newValue) => setVisibility(newValue as "personal" | "org")}
       >
         <Form.Dropdown.Item value="personal" title="Personal" />
         <Form.Dropdown.Item value="org" title="Organization" />
@@ -428,4 +438,3 @@ function UpdatePlaylistForm({
     </Form>
   );
 }
-

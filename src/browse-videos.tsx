@@ -28,6 +28,7 @@ import {
   startVideoExport,
   createPlaylist,
   RateLimitError,
+  MissingApiKeyError,
 } from "./api";
 import type {
   Video,
@@ -42,8 +43,17 @@ import {
   isCacheExpired,
   formatRelativeTime,
 } from "./cache";
-import { ErrorDetail, RateLimitErrorDetail } from "./components";
-import { formatDate, GRID_INITIAL_LOAD, FETCH_CONCURRENCY, BATCH_DELAY_MS } from "./utils";
+import {
+  ErrorDetail,
+  RateLimitErrorDetail,
+  MissingApiKeyDetail,
+} from "./components";
+import {
+  formatDate,
+  GRID_INITIAL_LOAD,
+  FETCH_CONCURRENCY,
+  BATCH_DELAY_MS,
+} from "./utils";
 
 type SortOption =
   | "date-desc"
@@ -366,10 +376,15 @@ export default function BrowseVideos({
     });
   }, [sortedVideos, videoDetailsRecord, viewMode]);
 
-  // Handle errors - check for rate limit errors first
+  // Handle errors - check for specific error types first
   if (error || detailsError) {
     const errorToShow = error || detailsError;
-    
+
+    // Handle missing API key with onboarding
+    if (errorToShow instanceof MissingApiKeyError) {
+      return <MissingApiKeyDetail />;
+    }
+
     // Handle rate limit errors with a better UI
     if (errorToShow instanceof RateLimitError) {
       return (
@@ -385,7 +400,7 @@ export default function BrowseVideos({
         />
       );
     }
-    
+
     // Handle other errors with debug info
     const debugInfo = {
       error: errorToShow?.message || String(errorToShow),
@@ -807,14 +822,11 @@ function VideoSettingsForm({
     data: fullVideo,
     isLoading,
     error: fetchError,
-  } = useCachedPromise(
-    async () => {
-      // Fetch full details (will be cached by useCachedPromise)
-      const response = await getVideo(video.id);
-      return response.video;
-    },
-    [video.id],
-  );
+  } = useCachedPromise(async () => {
+    // Fetch full details (will be cached by useCachedPromise)
+    const response = await getVideo(video.id);
+    return response.video;
+  }, [video.id]);
 
   // Use fullVideo when available, fallback to video for initial render
   const videoToUse = fullVideo || video;
@@ -836,7 +848,8 @@ function VideoSettingsForm({
       rawDownloadsEnabled: settings?.rawDownloadsEnabled ?? false,
       linkScope: settings?.linkScope || "public",
       password: "",
-      searchEngineIndexingEnabled: settings?.searchEngineIndexingEnabled ?? false,
+      searchEngineIndexingEnabled:
+        settings?.searchEngineIndexingEnabled ?? false,
       customThumbnailURL: settings?.customThumbnailURL || "",
     };
   };
@@ -995,9 +1008,7 @@ Fetching video details...`}
   // Show error if fetch failed
   if (fetchError || !fullVideo) {
     const errorMessage =
-      fetchError instanceof Error
-        ? fetchError.message
-        : "Failed to load video";
+      fetchError instanceof Error ? fetchError.message : "Failed to load video";
     return (
       <ErrorDetail
         error={errorMessage}
@@ -1386,17 +1397,14 @@ function AddToPlaylistAction({
 
   // Fetch full video details to get playlistIds if not provided
   // (list endpoint doesn't include playlistIds)
-  const { data: fullVideo } = useCachedPromise(
-    async () => {
-      // Only fetch if playlistIds not already available
-      if (videoPlaylistIds !== undefined) {
-        return null;
-      }
-      const response = await getVideo(videoId);
-      return response.video;
-    },
-    [videoId, videoPlaylistIds],
-  );
+  const { data: fullVideo } = useCachedPromise(async () => {
+    // Only fetch if playlistIds not already available
+    if (videoPlaylistIds !== undefined) {
+      return null;
+    }
+    const response = await getVideo(videoId);
+    return response.video;
+  }, [videoId, videoPlaylistIds]);
 
   // Use provided playlistIds or fetch from full video
   const currentPlaylistIds = videoPlaylistIds ?? fullVideo?.playlistIds;
@@ -1409,7 +1417,7 @@ function AddToPlaylistAction({
   return (
     <ActionPanel.Submenu title="Add to Playlist" icon={Icon.Plus}>
       <Action
-        title="Create New Playlist..."
+        title="Create New Playlist…"
         icon={Icon.PlusCircle}
         shortcut={{ modifiers: ["cmd"], key: "n" }}
         onAction={() =>

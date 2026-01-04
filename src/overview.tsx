@@ -14,11 +14,12 @@ import {
   getDurationCache,
   setDurationCache,
 } from "./cache";
-import { listVideos, listPlaylists, getVideo } from "./api";
+import { listVideos, listPlaylists, getVideo, MissingApiKeyError } from "./api";
 import type { Video } from "./types";
 import { FETCH_CONCURRENCY, BATCH_DELAY_MS } from "./utils";
 import BrowseVideos from "./browse-videos";
 import BrowsePlaylists from "./browse-playlists";
+import { MissingApiKeyDetail } from "./components";
 import {
   formatDate as formatDateRelative,
   formatNumber,
@@ -108,6 +109,7 @@ export default function Overview() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncingDurations, setIsSyncingDurations] = useState(false);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
+  const [apiKeyError, setApiKeyError] = useState(false);
 
   // Load cached videos and durations on mount
   useEffect(() => {
@@ -144,6 +146,11 @@ export default function Overview() {
           setCachedDurations(durationCache.durations);
         }
       } catch (error) {
+        if (error instanceof MissingApiKeyError) {
+          setApiKeyError(true);
+          setIsLoading(false);
+          return;
+        }
         showToast({
           style: Toast.Style.Failure,
           title: "Failed to load videos",
@@ -254,6 +261,10 @@ export default function Overview() {
       setIsSyncingDurations(false);
     }
   };
+
+  if (apiKeyError) {
+    return <MissingApiKeyDetail />;
+  }
 
   if (videos.length === 0 && !isLoading) {
     return (

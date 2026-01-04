@@ -166,7 +166,9 @@ export async function setTranscriptCache(
 
     // Check if cache is too large
     if (sizeBytes > CACHE_MAX_SIZE) {
-      console.warn(`Transcript cache too large (${formatCacheSize(sizeBytes)}), may fail to save`);
+      console.warn(
+        `Transcript cache too large (${formatCacheSize(sizeBytes)}), may fail to save`,
+      );
     }
 
     await LocalStorage.setItem(TRANSCRIPT_CACHE_KEY, json);

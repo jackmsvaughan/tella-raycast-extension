@@ -95,9 +95,17 @@ The AI tool searches your cached transcripts and returns relevant excerpts with 
 
 ## Setup
 
-1. Get your API key from [Tella account settings](https://tella.tv)
-2. Open Raycast and search for "Tella"
-3. Open any Tella command and set your API key in extension preferences
+1. **Install the extension** from the Raycast Store
+2. **Get your API key**:
+   - Go to [tella.tv/account](https://www.tella.tv/account)
+   - Scroll to the "API" section
+   - Click "Generate API Key" and copy it
+3. **Configure the extension**:
+   - Open Raycast and run any Tella command
+   - You'll be prompted to enter your API key
+   - Paste your key and press Enter
+
+That's it! You can now browse videos, search transcripts, and manage playlists.
 
 ## Configuration
 
