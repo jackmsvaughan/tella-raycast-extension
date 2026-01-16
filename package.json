@@ -7,8 +7,17 @@
   "author": "jackmsvaughan",
   "license": "MIT",
   "version": "1.0.0",
-  "categories": ["Productivity", "Media"],
-  "keywords": ["tella", "video", "screen recording", "transcripts", "loom alternative"],
+  "categories": [
+    "Productivity",
+    "Media"
+  ],
+  "keywords": [
+    "tella",
+    "video",
+    "screen recording",
+    "transcripts",
+    "loom alternative"
+  ],
   "commands": [
     {
       "name": "overview",
@@ -53,7 +62,9 @@
             "description": "The search query to find in video transcripts"
           }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       }
     }
   ],
@@ -73,22 +84,34 @@
       "required": false,
       "default": "30",
       "data": [
-        { "title": "5 minutes", "value": "5" },
-        { "title": "30 minutes", "value": "30" },
-        { "title": "1 hour", "value": "60" },
-        { "title": "Manual refresh only", "value": "0" }
+        {
+          "title": "5 minutes",
+          "value": "5"
+        },
+        {
+          "title": "30 minutes",
+          "value": "30"
+        },
+        {
+          "title": "1 hour",
+          "value": "60"
+        },
+        {
+          "title": "Manual refresh only",
+          "value": "0"
+        }
       ]
     }
   ],
   "dependencies": {
-    "@raycast/api": "^1.96.0",
-    "@raycast/utils": "^1.5.0",
-    "react": "^18.0.0"
+    "@raycast/api": "^1.104.1",
+    "@raycast/utils": "^2.2.2",
+    "react": "^19.2.3"
   },
   "devDependencies": {
     "@raycast/eslint-config": "^1.0.6",
     "@types/node": "^20.8.10",
-    "@types/react": "^18.2.27",
+    "@types/react": "^19.2.8",
     "eslint": "^8.51.0",
     "prettier": "^3.0.3",
     "typescript": "^5.2.2"
